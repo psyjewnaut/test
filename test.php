@@ -1,4 +1,166 @@
-<?php	public function requestContact(Request $request){
+<?php
+//контроллер Laravel
+namespace App\Http\Controllers;
+
+use App\Models\Brand;
+use App\Models\Category;
+use App\Models\KosherLevel;
+use App\Models\Product;
+use Illuminate\Http\Request;
+
+const perPage = 30;
+
+class CatalogController extends Controller
+{
+    /**
+     * Create a new controller instance.
+     *
+     * @return void
+     */
+
+    /**
+     * Show the application dashboard.
+     *
+     * @return \Illuminate\Contracts\Support\Renderable
+     */
+
+    public function category($slug) {
+        $category = Category::where('slug', $slug)->firstOrFail();
+        return view('catalog.category', compact('category'));
+    }
+
+    public function brand($slug) {
+        $brand = Brand::where('slug', $slug)->firstOrFail();
+        return view('catalog.brand', compact('brand'));
+    }
+
+    public function product($slug) {
+        $product = Product::where('slug', $slug)->firstOrFail();
+        return view('catalog.product', compact('product'));
+    }
+
+    public function index(Request $request)
+    {
+        $brand_ids = $request->brands;
+        $kosher_levels = $request->kosher_levels;
+        $products = Product::orderByDesc('updated_at')->paginate(perPage);
+        if ($brand_ids != null && $kosher_levels == null) {
+            $products = Product::whereIn('brand_id', $brand_ids)->orderByDesc('updated_at')->paginate(perPage);
+        }
+        else if ($kosher_levels != null && $brand_ids == null) {
+            $products = Product::whereIn('kosher_level', $kosher_levels)->orderByDesc('updated_at')->paginate(perPage);
+        }
+        else if ($kosher_levels != null && $brand_ids != null) {
+            $products = Product::whereIn('kosher_level', $kosher_levels)->whereIn('brand_id', $brand_ids)->orderByDesc('updated_at')->paginate(perPage);
+        }
+
+        $categories = Category::where('parent_id', 0)->get();
+        $tree = [];
+        $category_path = collect(array_reverse($tree));
+
+        $brands_view = Brand::all()->sortBy('name');
+        $levels_view = KosherLevel::all()->sortBy('name');
+
+        return view('catalog', ['products' => $products, 'categories' => $categories,
+            'parent_category' => null, 'current_category' => null,
+            'category_path' => $category_path, 'brands_view' => $brands_view, 'levels_view' => $levels_view, 'title' => 'Кошерные продукты']);
+    }
+
+    public function search(Request $request){
+
+        $search = $request->word;
+        $search = iconv_substr($search, 0, 64);
+        $search = preg_replace('#[^0-9a-zA-ZА-Яа-яёЁ]#u', ' ', $search);
+        $search = preg_replace('#\s+#u', ' ', $search);
+        $search = trim($search);
+        if (empty($search)) {
+            $products = null;
+            return view('search', ['products' => $products, 'count' => 0]);
+        }
+
+        $brand_id = Brand::whereRaw('MATCH(name) AGAINST("' . $search . '")')->get('id');
+        $category_id = Category::whereRaw('MATCH(name) AGAINST("' . $search . '")')->get('id');
+        $products_brands = Product::whereIn('brand_id', $brand_id);
+        $products_categories = Product::whereIn('category_id', $category_id);
+        $products_barcode = Product::where('barcode', 'like', $search);
+
+        $products = Product::whereRaw('MATCH(name) AGAINST("' . $search . '")')
+            ->union($products_brands)
+            ->union($products_barcode)
+            ->union($products_categories);
+
+        $count = $products->count();
+        $products = $products->paginate(perPage);
+
+        return view('search', ['products' => $products, 'count' => $count, 'title' => 'Поиск кошерных продуктов']);
+    }
+
+    public function selectCategory(Request $request, $slug)
+    {
+        $brand_ids = $request->brands;
+        $kosher_levels = $request->kosher_levels;
+
+        $current_id = Category::where('slug', $slug)->first()->id;
+        $current_category = Category::where('slug', $slug)->first();
+
+        $parent_id = Category::where('slug', $slug)->first()->parent_id;
+        $children_ids = Category::where('parent_id', $current_id)->get('id');
+
+        $parent_category = Category::where('slug', $slug)->first()->parent()->first();
+
+        $first_parent = $current_id;
+        $tree = [];
+        do{
+            $tree[] = $first_parent;
+            $first_parent = Category::where('id', $first_parent)->first()->parent_id;
+        } while ($first_parent != 0);
+
+        $category_path = collect(array_reverse($tree));
+
+        if ($parent_id == 0) {
+
+            $products = Product::whereIn('category_id', $children_ids)->orwhere('category_id', $current_id)->paginate(perPage);
+            $categories = Category::whereIn('id', $children_ids)->get();
+
+            if ($brand_ids != null && $kosher_levels == null) {
+                $products = Product::whereIn('brand_id', $brand_ids)->whereIn('category_id', $children_ids)->orderByDesc('updated_at')->paginate(perPage);
+            }
+            else if ($kosher_levels != null && $brand_ids == null) {
+                $products = Product::whereIn('kosher_level', $kosher_levels)->whereIn('category_id', $children_ids)->orderByDesc('updated_at')->paginate(perPage);
+            }
+            else if ($kosher_levels != null && $brand_ids != null) {
+                $products = Product::whereIn('kosher_level', $kosher_levels)->whereIn('brand_id', $brand_ids)->whereIn('category_id', $children_ids)->orderByDesc('updated_at')->paginate(perPage);
+            }
+            $brands_view = Brand::whereIn('id', Product::whereIn('category_id', $children_ids)->orwhere('category_id', $current_id)->orderBy('name')->get("brand_id"))->get();
+            $levels_view = KosherLevel::whereIn('id', Product::whereIn('category_id', $children_ids)->orwhere('category_id', $current_id)->orderBy('name')->get("kosher_level"))->get();
+        }
+        else {
+            $products = Product::where('category_id', $current_id)->paginate(perPage);
+            $categories_ids = Category::where('parent_id', $current_id)->get('id');
+
+            $categories = Category::whereIn('id', $categories_ids)->get();
+            if ($brand_ids != null && $kosher_levels == null) {
+                $products = Product::whereIn('brand_id', $brand_ids)->where('category_id', $current_id)->orderByDesc('updated_at')->paginate(perPage);
+            }
+            else if ($kosher_levels != null && $brand_ids == null) {
+                $products = Product::whereIn('kosher_level', $kosher_levels)->where('category_id', $current_id)->orderByDesc('updated_at')->paginate(perPage);
+            }
+            else if ($kosher_levels != null && $brand_ids != null) {
+                $products = Product::whereIn('kosher_level', $kosher_levels)->whereIn('brand_id', $brand_ids)->where('category_id', $current_id)->orderByDesc('updated_at')->paginate(perPage);
+            }
+            $brands_view = Brand::whereIn('id', Product::where('category_id', $current_id)->orderBy('name')->get("brand_id"))->get();
+            $levels_view = KosherLevel::whereIn('id', Product::where('category_id', $current_id)->orderBy('name')->get("kosher_level"))->get();
+        }
+
+        return view('catalog', ['products' => $products, 'categories' => $categories,
+            'parent_category' => $parent_category, 'current_category' => $current_category,
+            'category_path' => $category_path, 'brands_view' => $brands_view, 'levels_view' => $levels_view, 'title' => 'Кошерные продукты']);
+    }
+}
+	
+	
+	//запрос обратной связи с антифродом
+	public function requestContact(Request $request){
 		
         if(isset($_POST['h-captcha-response']) && !empty($_POST['h-captcha-response'])){
             $secret = 's';
@@ -60,7 +222,8 @@
             return view('contact', ['status' => 'error']);
         }
     }
-
+	
+	//пример сложного алгоритма, группировка в правильном порядке исполнения с задержками, псевдопараллельность (на одну паузу отправить все команды разных объектов с такой же паузой одновременно, а не в ряд)
     public function sendCmdGroup(){
         if ($this->rbac->check_permission('OBJECT_CONTROL')) {
             $group_id = $this->input->post('group_id');
@@ -172,8 +335,8 @@
         echo $response;
     }
 	
-	
-	function save_panel(){
+		//CodeIgnitor, новый объект
+		function save_panel(){
         if ($this->rbac->check_permission('OBJECT_CONTROL')) {
             $data = $this->input->post();
             $objectID = (int)$data['ID'];
@@ -193,7 +356,6 @@
                 $panel_json = json_encode($panel);
 
 
-
                 $this->db->query('UPDATE "List_Cabinets" SET "panel" = \'' . $panel_json . '\' WHERE "ObjectListID" = ' . $data['ID']);
 
                 echo json_encode(['success' => true]);
@@ -207,8 +369,10 @@
             echo json_encode(['success' => false, 'msg' => localize('Доступ запрещён')]);
         }
     }
-	
 ?>
+	<!--
+	фронт, vue.js
+	-->
 	<template>
 	  <v-container fluid class="py-md-3">
 		<v-form v-model="validForm">
